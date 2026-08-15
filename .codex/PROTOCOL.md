@@ -29,6 +29,8 @@ A valid work order must contain:
 - known dependencies/blockers;
 - review evidence requested.
 
+The write boundary must explicitly include the work order's handoff-report path when the report is expected to be committed. There are no implicit write-boundary exceptions for `.codex` task artifacts.
+
 A work order may suggest relevant gates, but the **actual final diff** determines all canonical gates that must run.
 
 If `.codex/CURRENT_TASK.md` points to no assignment, Codex must stay read-only.
@@ -86,9 +88,9 @@ When implementation is ready:
 
 1. create intentional commit(s) on the assigned branch;
 2. leave no unexplained generated/untracked files;
-3. write `.codex/reports/<WORK_ORDER_ID>-handoff.md` from the handoff template;
+3. write the exact handoff-report path declared in the work order using `.codex/templates/HANDOFF_REPORT.md`;
 4. include the final commit SHA in the report;
-5. set the work-order implementation status to `HANDOFF` only if the work order permits the agent to update that file;
+5. set the work-order implementation status to `HANDOFF` only if that exact work-order path is also inside the declared write boundary;
 6. tell the human operator what branch/commit should be pushed if pushing was not authorized.
 
 The implementation report is evidence, not acceptance.
