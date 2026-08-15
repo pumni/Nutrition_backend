@@ -23,9 +23,14 @@ If the local branch/baseline materially differs, stop mutation and report the mi
 
 Allowed coarse paths:
 
-- `<path/**>`
+- `<implementation-path/**>`
+- `.codex/reports/<WO-ID>-handoff.md`
 
-Anything outside this boundary requires explicit scope expansion before editing.
+Optional work-order status update, only when explicitly permitted by the reviewer:
+
+- `.codex/work-orders/<WO-ID>.md`
+
+Anything outside the listed boundary requires explicit scope expansion before editing. There is no implicit exception for task artifacts.
 
 ## Acceptance criteria
 
