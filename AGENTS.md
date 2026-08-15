@@ -6,4 +6,6 @@ Human owners control product/domain semantics, architecture, public API, databas
 
 Start with `AGENTS.md` and the minimal modules routed by `.agent/context/router.json`. Expand context only when repository evidence requires it. Verify the actual diff with canonical gate IDs and protected-path approvals. The harness derives context and verification requirements from the observed outcome; task artifacts do not define commands.
 
+For Codex CLI running in the human owner's local checkout, also read `.codex/README.md`, `.codex/PROTOCOL.md`, and `.codex/CURRENT_TASK.md`. Local Codex is the bounded implementer; it may hand work off for review but must not self-accept, merge, or override repository authority.
+
 If baseline, contract, scope, context, or verification preconditions conflict, stop only the affected work and produce a protected-decision report with classification, evidence, constraint, impact, and the smallest human decision required.
