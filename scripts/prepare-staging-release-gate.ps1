@@ -67,8 +67,20 @@ function Assert-Sha256 {
 
 function Assert-SafeReference {
     param([Parameter(Mandatory = $true)][string]$Value, [Parameter(Mandatory = $true)][string]$Label)
-    if ($Value -notmatch '^[A-Za-z0-9:/._@+-]{1,512}$') {
+    if ($Value -notmatch '^[A-Za-z0-9:/._@+-]{1,512}$' -or
+        $Value -match '(?i)://[^/\s:]+:[^@\s]+@' -or
+        $Value -match '(?i)(?:^|[^a-z])(sk|ghp|xoxb|bearer)[-_][a-z0-9_-]{8,}') {
         throw "$Label is not a safe evidence reference"
+    }
+}
+
+function Assert-SafeText {
+    param([Parameter(Mandatory = $true)][string]$Value, [Parameter(Mandatory = $true)][string]$Label)
+    if ($Value.Length -gt 1024 -or
+        $Value -match '(?i)://[^/\s:]+:[^@\s]+@' -or
+        $Value -match '(?i)-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----' -or
+        $Value -match '(?i)(?:^|[^a-z])(sk|ghp|xoxb|bearer)[-_][a-z0-9_-]{8,}') {
+        throw "$Label contains unsafe evidence text"
     }
 }
 
@@ -116,6 +128,7 @@ if (-not [Guid]::TryParse([string]$candidate.catalog.release_id, [ref]$candidate
     throw "candidate catalog release ID is not an unambiguous UUID"
 }
 Assert-SafeReference -Value ([string]$candidate.catalog.evidence_ref) -Label "candidate catalog evidence reference"
+Assert-SafeReference -Value ([string]$candidate.parser.provider_version) -Label "candidate parser provider version"
 if ([int64]$candidate.migrations.count -le 0 -or @($candidate.migrations.files).Count -ne [int64]$candidate.migrations.count) {
     throw "candidate migration inventory is incomplete"
 }
@@ -128,8 +141,8 @@ if (@($candidate.containers).Count -eq 0) {
 }
 foreach ($image in @($candidate.containers)) {
     Assert-ExactProperties -Object $image -Allowed @("name", "reference", "digest") -Label "candidate container image"
-    [void](Require-Text $image "name" "candidate container image")
-    [void](Require-Text $image "reference" "candidate container image")
+    Assert-SafeReference -Value (Require-Text $image "name" "candidate container image") -Label "candidate container image name"
+    Assert-SafeReference -Value (Require-Text $image "reference" "candidate container image") -Label "candidate container image reference"
     Assert-Sha256 -Value ([string]$image.digest) -Label "candidate container image digest"
 }
 
@@ -169,6 +182,12 @@ if ([string]$gateInput.rollback_target_evidence_sha256 -ine "sha256:$actualRollb
 }
 Assert-SafeReference -Value ([string]$gateInput.rollback_target_evidence_ref) -Label "rollback target evidence reference"
 
+$gitCommit = Get-GitValue @("rev-parse", "--verify", "HEAD") "Git commit"
+$gitStatus = (& git -c core.excludesFile= status --porcelain --untracked-files=all 2>$null | Out-String).Trim()
+if (-not [string]::IsNullOrWhiteSpace($gitStatus)) {
+    throw "working tree is not clean; staging gate evidence must bind to a clean source commit"
+}
+
 $requiredGateIds = @(
     "M0-governance",
     "M1-provider-privacy",
@@ -201,6 +220,24 @@ foreach ($gate in @($gateInput.gates)) {
             throw "passed staging gate '$($gate.id)' artifact SHA-256 does not match"
         }
         if ($null -ne $gate.waiver_ref) { throw "passed staging gate '$($gate.id)' cannot carry a waiver" }
+        $artifactDocument = Read-Json -Path $artifactPath -Label "passed staging gate artifact"
+        Assert-ExactProperties -Object $artifactDocument.value -Allowed @(
+            "schema_version", "task_id", "gate_id", "subject_commit", "candidate_evidence_sha256",
+            "result", "evidence_ref", "production_authorization", "scope", "rationale", "waiver_ref"
+        ) -Label "passed staging gate artifact"
+        if ([string]$artifactDocument.value.schema_version -ne "staging-gate-evidence-wrapper-0.1.0" -or
+            [string]$artifactDocument.value.task_id -ne "INTENT-P0-106" -or
+            [string]$artifactDocument.value.gate_id -ne [string]$gate.id -or
+            [string]$artifactDocument.value.subject_commit -ine $gitCommit -or
+            [string]$artifactDocument.value.candidate_evidence_sha256 -ine [string]$gateInput.candidate_evidence_sha256 -or
+            [string]$artifactDocument.value.result -ne "pass" -or
+            [string]$artifactDocument.value.evidence_ref -ne [string]$gate.evidence_ref -or
+            [bool]$artifactDocument.value.production_authorization -or
+            [string]$artifactDocument.value.scope -ne "staging-only" -or
+            $null -ne $artifactDocument.value.waiver_ref) {
+            throw "passed staging gate '$($gate.id)' artifact wrapper is not bound to this candidate and gate"
+        }
+        Assert-SafeText -Value ([string]$artifactDocument.value.rationale) -Label "passed staging gate rationale"
     }
     elseif ([string]$gate.status -eq "blocked") {
         if ($null -ne $gate.artifact_path -or $null -ne $gate.artifact_sha256 -or $null -ne $gate.waiver_ref) {
@@ -208,16 +245,7 @@ foreach ($gate in @($gateInput.gates)) {
         }
     }
     else {
-        $artifactPath = Assert-ExternalPath -Path ([string]$gate.artifact_path) -Label "waived staging gate artifact path"
-        if (-not (Test-Path -LiteralPath $artifactPath -PathType Leaf)) {
-            throw "waived staging gate '$($gate.id)' artifact does not exist"
-        }
-        $actualArtifactSha = (Get-FileHash -LiteralPath $artifactPath -Algorithm SHA256).Hash.ToLowerInvariant()
-        Assert-Sha256 -Value ([string]$gate.artifact_sha256) -Label "waived staging gate artifact SHA-256"
-        if ([string]$gate.artifact_sha256 -ine "sha256:$actualArtifactSha") {
-            throw "waived staging gate '$($gate.id)' artifact SHA-256 does not match"
-        }
-        Assert-SafeReference -Value ([string]$gate.waiver_ref) -Label "staging gate waiver reference"
+        throw "waived staging gate '$($gate.id)' requires a new P0-106 owner waiver; no current OWNER-BE decision authorizes this waiver"
     }
     $gateRecords.Add([ordered]@{
             id = [string]$gate.id
@@ -233,11 +261,6 @@ foreach ($requiredGateId in $requiredGateIds) {
     }
 }
 
-$gitCommit = Get-GitValue @("rev-parse", "--verify", "HEAD") "Git commit"
-$gitStatus = (& git -c core.excludesFile= status --porcelain --untracked-files=all 2>$null | Out-String).Trim()
-if (-not [string]::IsNullOrWhiteSpace($gitStatus)) {
-    throw "working tree is not clean; staging gate evidence must bind to a clean source tree"
-}
 if ([string]$candidate.source.git_commit -ine $gitCommit) {
     throw "candidate evidence commit does not match the current source commit"
 }
