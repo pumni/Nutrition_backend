@@ -39,9 +39,11 @@ Validate an owner-supplied package with an output path outside the repository:
 ```
 
 The validator requires SHA-256-bound provenance, safe evidence references, a review state, a draft or
-staged release state, and record-specific fields. Proposed records must use `reviewer_role: "none"`;
-claiming human review requires an explicit human reviewer role and decision reference in the supplied
-package. The validator does not authenticate that person or convert machine output into human review.
+staged release state, array-shaped collections, package/record identifier patterns, and record-specific
+fields. It rejects Windows absolute references and the prohibited Vietnam FCT 2017 source. Proposed
+records must use `reviewer_role: "none"`; claiming human review requires an explicit human reviewer role
+and decision reference in the supplied package. The validator does not authenticate that person or convert
+machine output into human review.
 
 ## Record-specific safety
 
