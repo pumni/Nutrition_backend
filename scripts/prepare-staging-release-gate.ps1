@@ -164,7 +164,7 @@ if (@($gateInput.gates).Count -ne $requiredGateIds.Count) {
 }
 $gateRecords = [Collections.Generic.List[object]]::new()
 foreach ($gate in @($gateInput.gates)) {
-    Assert-ExactProperties -Object $gate -Allowed @("id", "status", "evidence_ref", "artifact_sha256", "waiver_ref") -Label "staging gate record"
+    Assert-ExactProperties -Object $gate -Allowed @("id", "status", "evidence_ref", "artifact_path", "artifact_sha256", "waiver_ref") -Label "staging gate record"
     if ([string]$gate.id -notin $requiredGateIds -or @($gateInput.gates | Where-Object id -eq $gate.id).Count -ne 1) {
         throw "staging gate IDs must be the unique M0-M5 set"
     }
@@ -173,16 +173,32 @@ foreach ($gate in @($gateInput.gates)) {
     }
     Assert-SafeReference -Value ([string]$gate.evidence_ref) -Label "staging gate evidence reference"
     if ([string]$gate.status -eq "pass") {
+        $artifactPath = Assert-ExternalPath -Path ([string]$gate.artifact_path) -Label "staging gate artifact path"
+        if (-not (Test-Path -LiteralPath $artifactPath -PathType Leaf)) {
+            throw "passed staging gate '$($gate.id)' artifact does not exist"
+        }
+        $actualArtifactSha = (Get-FileHash -LiteralPath $artifactPath -Algorithm SHA256).Hash.ToLowerInvariant()
         Assert-Sha256 -Value ([string]$gate.artifact_sha256) -Label "staging gate artifact SHA-256"
+        if ([string]$gate.artifact_sha256 -ine "sha256:$actualArtifactSha") {
+            throw "passed staging gate '$($gate.id)' artifact SHA-256 does not match"
+        }
         if ($null -ne $gate.waiver_ref) { throw "passed staging gate '$($gate.id)' cannot carry a waiver" }
     }
     elseif ([string]$gate.status -eq "blocked") {
-        if ($null -ne $gate.artifact_sha256 -or $null -ne $gate.waiver_ref) {
+        if ($null -ne $gate.artifact_path -or $null -ne $gate.artifact_sha256 -or $null -ne $gate.waiver_ref) {
             throw "blocked staging gate '$($gate.id)' cannot claim an artifact or waiver"
         }
     }
     else {
+        $artifactPath = Assert-ExternalPath -Path ([string]$gate.artifact_path) -Label "waived staging gate artifact path"
+        if (-not (Test-Path -LiteralPath $artifactPath -PathType Leaf)) {
+            throw "waived staging gate '$($gate.id)' artifact does not exist"
+        }
+        $actualArtifactSha = (Get-FileHash -LiteralPath $artifactPath -Algorithm SHA256).Hash.ToLowerInvariant()
         Assert-Sha256 -Value ([string]$gate.artifact_sha256) -Label "waived staging gate artifact SHA-256"
+        if ([string]$gate.artifact_sha256 -ine "sha256:$actualArtifactSha") {
+            throw "waived staging gate '$($gate.id)' artifact SHA-256 does not match"
+        }
         Assert-SafeReference -Value ([string]$gate.waiver_ref) -Label "staging gate waiver reference"
     }
     $gateRecords.Add([ordered]@{

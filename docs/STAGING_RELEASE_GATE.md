@@ -18,8 +18,9 @@ traffic, activates a catalog, creates a tag, or publishes `v1.0.0`.
 
 ## Required gates
 
-The gate input must contain exactly one record for each ID below. A `pass` record requires a full
-artifact SHA-256. A `blocked` record must carry a safe evidence reference but no artifact or waiver.
+The gate input must contain exactly one record for each ID below. A `pass` or `waived` record
+requires an external artifact path; the script computes its SHA-256 and compares it with the
+declared digest. A `blocked` record must carry a safe evidence reference but no artifact or waiver.
 `waived` is reserved for a separately approved owner waiver and still does not authorize production.
 
 - `M0-governance`
