@@ -161,6 +161,45 @@ pub struct AnalysisSnapshot {
     pub owner_id: Option<UserId>,
 }
 
+#[derive(Clone, Debug)]
+pub struct AnalysisListQuery {
+    pub status: Option<String>,
+    pub locale: Option<String>,
+    pub snapshot_epoch_seconds: i64,
+    pub after_created_at: Option<String>,
+    pub after_analysis_id: Option<AnalysisId>,
+    pub limit: i64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct AnalysisListEntry {
+    pub analysis_id: AnalysisId,
+    pub status: String,
+    pub locale: String,
+    pub created_at: String,
+    pub current_revision_number: Option<u32>,
+    pub result_status: Option<String>,
+    pub quality_label: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct WorkflowQuestion {
+    pub question_id: ClarificationQuestionId,
+    pub dimension: String,
+    pub prompt: String,
+    pub options: Vec<ClarificationOption>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct AnalysisWorkflow {
+    pub analysis_id: AnalysisId,
+    pub current_revision_id: Option<AnalysisRevisionId>,
+    pub current_revision_number: Option<u32>,
+    pub state: String,
+    pub pending_question: Option<WorkflowQuestion>,
+    pub allowed_actions: Vec<String>,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ClarificationOption {
     pub id: String,
@@ -222,6 +261,8 @@ pub struct ClarificationAnswerRequest {
     pub question_id: ClarificationQuestionId,
     pub option_id: String,
     pub mass_g: Option<Decimal>,
+    #[serde(skip)]
+    pub idempotency: Option<IdempotencyContext>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

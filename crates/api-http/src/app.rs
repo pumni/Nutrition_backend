@@ -20,6 +20,7 @@ pub(crate) struct AppState {
     pub(crate) reader: Arc<dyn AnalysisSnapshotReader>,
     pub(crate) repository: PostgresAnalysisRepository,
     pub(crate) pool: sqlx::PgPool,
+    pub(crate) cursor_hmac_secret: Arc<Vec<u8>>,
 }
 
 #[derive(Serialize)]
@@ -45,6 +46,7 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, code) = match &self.0 {
             ApplicationError::InvalidInput(_) => (StatusCode::BAD_REQUEST, "invalid_request"),
+            ApplicationError::InvalidCursor => (StatusCode::BAD_REQUEST, "invalid_cursor"),
             ApplicationError::ParserUnavailable(_) => {
                 (StatusCode::SERVICE_UNAVAILABLE, "parser_unavailable")
             }

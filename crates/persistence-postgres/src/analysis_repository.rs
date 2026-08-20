@@ -1,7 +1,8 @@
 use crate::privacy::redact_persisted_value;
 use application::{
-    AnalysisRepository, AnalysisSnapshot, AnalysisSnapshotReader, ApplicationError,
-    ClarificationAnalysis, ClarificationAnswerRequest, CorrectionRequest,
+    AnalysisListEntry, AnalysisListQuery, AnalysisRepository, AnalysisSnapshot,
+    AnalysisSnapshotReader, AnalysisWorkflow, ApplicationError, ClarificationAnalysis,
+    ClarificationAnswerRequest, CorrectionRequest, WorkflowQuestion,
 };
 use async_trait::async_trait;
 use domain::{
@@ -230,6 +231,163 @@ impl AnalysisSnapshotReader for PostgresAnalysisRepository {
         .await
         .map(|value| value.map(AnalysisRevisionId::from_uuid))
         .map_err(|_| ApplicationError::Persistence)
+    }
+
+    async fn list(
+        &self,
+        user_id: UserId,
+        query: AnalysisListQuery,
+    ) -> Result<Vec<AnalysisListEntry>, ApplicationError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT meal.id,
+                   meal.status,
+                   meal.locale,
+                   to_char(meal.created_at AT TIME ZONE 'UTC',
+                           'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS created_at,
+                   revision.revision_number,
+                   revision.result_status,
+                   revision.quality_label
+            FROM analysis.meal_analysis meal
+            LEFT JOIN analysis.analysis_revision revision
+              ON revision.id = meal.current_revision_id
+            WHERE meal.user_id = $1
+              AND ($2::text IS NULL OR meal.status = $2)
+              AND ($3::text IS NULL OR meal.locale = $3)
+              AND meal.created_at <= to_timestamp($4::double precision)
+              AND (
+                    $5::text IS NULL
+                    OR meal.created_at < $5::timestamptz
+                    OR (meal.created_at = $5::timestamptz AND meal.id < $6)
+              )
+            ORDER BY meal.created_at DESC, meal.id DESC
+            LIMIT $7
+            "#,
+        )
+        .bind(user_id.as_uuid())
+        .bind(query.status.as_deref())
+        .bind(query.locale.as_deref())
+        .bind(query.snapshot_epoch_seconds)
+        .bind(query.after_created_at.as_deref())
+        .bind(query.after_analysis_id.map(AnalysisId::as_uuid))
+        .bind(query.limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|_| ApplicationError::Persistence)?;
+
+        rows.into_iter()
+            .map(|row| {
+                let revision_number: Option<i32> = row
+                    .try_get("revision_number")
+                    .map_err(|_| ApplicationError::Persistence)?;
+                Ok(AnalysisListEntry {
+                    analysis_id: AnalysisId::from_uuid(
+                        row.try_get("id")
+                            .map_err(|_| ApplicationError::Persistence)?,
+                    ),
+                    status: row
+                        .try_get("status")
+                        .map_err(|_| ApplicationError::Persistence)?,
+                    locale: row
+                        .try_get("locale")
+                        .map_err(|_| ApplicationError::Persistence)?,
+                    created_at: row
+                        .try_get("created_at")
+                        .map_err(|_| ApplicationError::Persistence)?,
+                    current_revision_number: revision_number
+                        .map(|value| {
+                            u32::try_from(value).map_err(|_| ApplicationError::Persistence)
+                        })
+                        .transpose()?,
+                    result_status: row
+                        .try_get("result_status")
+                        .map_err(|_| ApplicationError::Persistence)?,
+                    quality_label: row
+                        .try_get("quality_label")
+                        .map_err(|_| ApplicationError::Persistence)?,
+                })
+            })
+            .collect()
+    }
+
+    async fn workflow(
+        &self,
+        analysis_id: AnalysisId,
+    ) -> Result<Option<AnalysisWorkflow>, ApplicationError> {
+        let row = sqlx::query(
+            r"
+            SELECT meal.id,
+                   meal.status,
+                   revision.id AS revision_id,
+                   revision.revision_number,
+                   question.id AS question_id,
+                   question.dimension,
+                   question.prompt,
+                   question.options
+            FROM analysis.meal_analysis meal
+            LEFT JOIN analysis.analysis_revision revision
+              ON revision.id = meal.current_revision_id
+            LEFT JOIN analysis.clarification_question question
+              ON question.analysis_revision_id = revision.id
+             AND question.status = 'open'
+            WHERE meal.id = $1
+            ",
+        )
+        .bind(analysis_id.as_uuid())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|_| ApplicationError::Persistence)?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+
+        let status: String = row
+            .try_get("status")
+            .map_err(|_| ApplicationError::Persistence)?;
+        let revision_number: Option<i32> = row
+            .try_get("revision_number")
+            .map_err(|_| ApplicationError::Persistence)?;
+        let question_id: Option<Uuid> = row
+            .try_get("question_id")
+            .map_err(|_| ApplicationError::Persistence)?;
+        let pending_question = match question_id {
+            Some(question_id) => Some(WorkflowQuestion {
+                question_id: domain::ClarificationQuestionId::from_uuid(question_id),
+                dimension: row
+                    .try_get("dimension")
+                    .map_err(|_| ApplicationError::Persistence)?,
+                prompt: row
+                    .try_get("prompt")
+                    .map_err(|_| ApplicationError::Persistence)?,
+                options: serde_json::from_value(
+                    row.try_get("options")
+                        .map_err(|_| ApplicationError::Persistence)?,
+                )
+                .map_err(|_| ApplicationError::Persistence)?,
+            }),
+            None => None,
+        };
+        let current_revision_number = revision_number
+            .map(|value| u32::try_from(value).map_err(|_| ApplicationError::Persistence))
+            .transpose()?;
+
+        Ok(Some(AnalysisWorkflow {
+            analysis_id,
+            current_revision_id: row
+                .try_get::<Option<Uuid>, _>("revision_id")
+                .map_err(|_| ApplicationError::Persistence)?
+                .map(AnalysisRevisionId::from_uuid),
+            current_revision_number,
+            state: status.clone(),
+            pending_question,
+            allowed_actions: match status.as_str() {
+                "needs_clarification" => vec!["answer_clarification".to_owned()],
+                "completed" | "confirmed" | "corrected" | "insufficient_evidence" => {
+                    vec!["correct".to_owned()]
+                }
+                _ => Vec::new(),
+            },
+        }))
     }
 }
 
@@ -481,6 +639,13 @@ async fn persist_clarification_answer(
     .map_err(|_| ApplicationError::Persistence)?;
     set_completed_from(&mut transaction, snapshot, "resolving").await?;
     insert_outbox(&mut transaction, snapshot).await?;
+    insert_idempotency(
+        &mut transaction,
+        answer.idempotency.as_ref(),
+        snapshot.analysis_id,
+        snapshot.revision_id,
+    )
+    .await?;
     transaction
         .commit()
         .await
