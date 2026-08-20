@@ -58,6 +58,19 @@ function Require-Text {
     return [string]$property.Value
 }
 
+function Assert-Boolean {
+    param(
+        [Parameter(Mandatory = $true)][object]$Object,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][bool]$Expected,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+    $property = $Object.PSObject.Properties[$Name]
+    if ($null -eq $property -or $property.Value -isnot [bool] -or [bool]$property.Value -ne $Expected) {
+        throw "$Label must contain Boolean '$Name'=$Expected"
+    }
+}
+
 function Assert-Sha256 {
     param([Parameter(Mandatory = $true)][string]$Value, [Parameter(Mandatory = $true)][string]$Label)
     if ($Value -notmatch '^sha256:[0-9a-fA-F]{64}$') {
@@ -86,7 +99,7 @@ function Assert-SafeText {
 
 function Get-GitValue {
     param([Parameter(Mandatory = $true)][string[]]$Arguments, [Parameter(Mandatory = $true)][string]$Label)
-    $value = (& git -c core.excludesFile= @Arguments 2>$null | Out-String).Trim()
+    $value = (& git -C $repositoryRoot -c core.excludesFile= @Arguments 2>$null | Out-String).Trim()
     if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($value)) {
         throw "could not resolve $Label"
     }
@@ -108,14 +121,14 @@ Assert-ExactProperties -Object $candidate -Allowed @(
 ) -Label "candidate evidence"
 if ([string]$candidate.schema_version -ne "release-evidence-candidate-0.1.0" -or
     [string]$candidate.evidence_kind -ne "candidate" -or
-    -not [bool]$candidate.candidate_only -or
-    [bool]$candidate.release_approved -or
-    [bool]$candidate.publication_performed -or
-    [bool]$candidate.production_activation_performed -or
-    [bool]$candidate.deployment_performed -or
     [string]$candidate.source.tree_status -ne "clean") {
     throw "candidate evidence is not a non-published candidate-only document"
 }
+Assert-Boolean -Object $candidate -Name "candidate_only" -Expected $true -Label "candidate evidence"
+Assert-Boolean -Object $candidate -Name "release_approved" -Expected $false -Label "candidate evidence"
+Assert-Boolean -Object $candidate -Name "publication_performed" -Expected $false -Label "candidate evidence"
+Assert-Boolean -Object $candidate -Name "production_activation_performed" -Expected $false -Label "candidate evidence"
+Assert-Boolean -Object $candidate -Name "deployment_performed" -Expected $false -Label "candidate evidence"
 
 Assert-ExactProperties -Object $candidate.source -Allowed @("git_commit", "tree_status", "application_version", "source_build_identity") -Label "candidate source"
 Assert-ExactProperties -Object $candidate.migrations -Allowed @("count", "set_sha256", "files") -Label "candidate migrations"
@@ -183,7 +196,7 @@ if ([string]$gateInput.rollback_target_evidence_sha256 -ine "sha256:$actualRollb
 Assert-SafeReference -Value ([string]$gateInput.rollback_target_evidence_ref) -Label "rollback target evidence reference"
 
 $gitCommit = Get-GitValue @("rev-parse", "--verify", "HEAD") "Git commit"
-$gitStatus = (& git -c core.excludesFile= status --porcelain --untracked-files=all 2>$null | Out-String).Trim()
+$gitStatus = (& git -C $repositoryRoot -c core.excludesFile= status --porcelain --untracked-files=all 2>$null | Out-String).Trim()
 if (-not [string]::IsNullOrWhiteSpace($gitStatus)) {
     throw "working tree is not clean; staging gate evidence must bind to a clean source commit"
 }
@@ -232,11 +245,11 @@ foreach ($gate in @($gateInput.gates)) {
             [string]$artifactDocument.value.candidate_evidence_sha256 -ine [string]$gateInput.candidate_evidence_sha256 -or
             [string]$artifactDocument.value.result -ne "pass" -or
             [string]$artifactDocument.value.evidence_ref -ne [string]$gate.evidence_ref -or
-            [bool]$artifactDocument.value.production_authorization -or
             [string]$artifactDocument.value.scope -ne "staging-only" -or
             $null -ne $artifactDocument.value.waiver_ref) {
             throw "passed staging gate '$($gate.id)' artifact wrapper is not bound to this candidate and gate"
         }
+        Assert-Boolean -Object $artifactDocument.value -Name "production_authorization" -Expected $false -Label "passed staging gate '$($gate.id)' artifact wrapper"
         Assert-SafeText -Value ([string]$artifactDocument.value.rationale) -Label "passed staging gate rationale"
     }
     elseif ([string]$gate.status -eq "blocked") {
