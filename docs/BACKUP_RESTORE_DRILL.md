@@ -19,21 +19,35 @@ those artifacts and contains no production connection-string input.
 ```powershell
 $evidence = Join-Path $env:TEMP "nutrition-p2-105-recovery-evidence.json"
 $backup = Join-Path $env:TEMP "nutrition-p2-105-recovery.dump"
+$privacy = Join-Path $env:TEMP "nutrition-p2-105-privacy-replay.json"
 pwsh -NoLogo -NoProfile -File .\scripts\run-backup-restore-drill.ps1 `
   -OutputPath $evidence `
   -BackupPath $backup `
+  -PrivacyReplayManifestPath $privacy `
   -InitializeFoundation
 Get-Content -Raw $evidence
 ```
+
+The privacy manifest is an external, non-sensitive platform artifact. For this synthetic fixture,
+it must use `schema_version=privacy-restore-gate-0.1.0`, `environment=synthetic-local`,
+`replay_status=applied`, `production_authorization=false`, and zero deletion/retention tombstones.
+The script verifies the manifest before it starts the API. A staging run must provide the platform's
+real replay result and matching counts; the script does not invent a tombstone table or silently
+serve restored data when the replay gate is absent.
 
 The script performs the following bounded checks:
 
 - starts the local PostgreSQL service when it is not supplied with `-UseExistingSource`;
 - creates a PostgreSQL custom-format dump without placing it in the repository;
+- encrypts the external local drill artifact with an ephemeral AES-256 key, emits no key, and
+  removes plaintext scratch copies after transfer;
 - restores the dump into a new isolated PostgreSQL 18 container;
-- compares migration, analysis, catalog, audit, job, and outbox row snapshots;
+- compares migration version/checksum inventory, schema/constraint fingerprints, data fingerprints,
+  analysis, catalog, audit, job, and outbox snapshots;
 - verifies no restored analysis row contains `raw_text_ciphertext`;
-- starts the API against the restored database and checks readiness plus an owner-scoped listing;
+- verifies the privacy replay manifest before serving restored data;
+- starts the API against the restored database and checks HTTP 200 readiness, exact owner-scoped
+  listing fields/count, and an empty foreign-owner listing;
 - records backup/restore duration, artifact SHA-256, and objective comparisons;
 - removes the disposable restore container and stops only the source service it started.
 
@@ -52,7 +66,10 @@ candidate release and retain the references in the release evidence:
 2. Backup retention policy of 35 days and access restricted to the recovery operators.
 3. A disposable restore target isolated from production traffic and credentials.
 4. A restore sequence that reapplies deletion and retention tombstones before serving any
-   restored user data. Deleted user data may remain in encrypted backups until expiry.
+   restored user data. Deleted user data may remain in encrypted backups until expiry. The
+   repository's current privacy implementation hard-deletes user-owned aggregates and retains a
+   bounded audit event; a platform-specific tombstone/replay mechanism must be supplied and
+   recorded at staging rather than invented by this repository task.
 5. Evidence of the measured RPO/RTO, application-level checks, and the exact backup artifact or
    platform run reference.
 
@@ -66,8 +83,21 @@ applied migrations.
 
 Catalog rollback creates a new staged immutable snapshot from the prior superseded release through
 the existing catalog rollback workflow. It recomputes the manifest checksum, validates membership
-and evidence, and uses the explicit catalog activation gate. The drill does not activate a catalog,
-deploy an image, change traffic, call the hosted provider, or authorize a release.
+and evidence, and uses the explicit catalog activation gate. A synthetic rollback evidence input
+can be validated without deployment:
+
+```powershell
+$rollbackInput = Join-Path $env:TEMP "nutrition-p2-105-rollback-input.json"
+$rollbackEvidence = Join-Path $env:TEMP "nutrition-p2-105-rollback-evidence.json"
+pwsh -NoLogo -NoProfile -File .\scripts\validate-recovery-rollback.ps1 `
+  -InputPath $rollbackInput -OutputPath $rollbackEvidence
+```
+
+This validates immutable application image/configuration references, forward-only migration
+compatibility, and a staged immutable catalog rollback reference. It does not deploy an image,
+activate a catalog, change traffic, call the hosted provider, or authorize a release. Platform
+staging evidence must still bind the actual image digests, configuration fingerprints, and catalog
+rollback execution.
 
 ## Required review before production
 
