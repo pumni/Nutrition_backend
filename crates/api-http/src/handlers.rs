@@ -79,9 +79,9 @@ pub(crate) async fn analyze(
     let scope = format!("user:{principal}:create");
     let key = required_idempotency_key(&headers)?;
     let request_hash = json_hash(&request)?;
-    if let Some(response) = state
+    if let persistence_postgres::IdempotencyReservation::Replay(response) = state
         .repository
-        .find_idempotent_response(&scope, &key, &request_hash)
+        .reserve_idempotency(&scope, &key, &request_hash)
         .await
         .map_err(ApiError)?
     {
@@ -138,9 +138,9 @@ pub(crate) async fn answer_clarification(
     let scope = format!("user:{principal}:clarification:{analysis_id}");
     let key = required_idempotency_key(&headers)?;
     let request_hash = json_hash(&request)?;
-    if let Some(response) = state
+    if let persistence_postgres::IdempotencyReservation::Replay(response) = state
         .repository
-        .find_idempotent_response(&scope, &key, &request_hash)
+        .reserve_idempotency(&scope, &key, &request_hash)
         .await
         .map_err(ApiError)?
     {
@@ -172,9 +172,9 @@ pub(crate) async fn correct_analysis(
     let scope = format!("user:{principal}:correction:{analysis_id}");
     let key = required_idempotency_key(&headers)?;
     let request_hash = json_hash(&request)?;
-    if let Some(response) = state
+    if let persistence_postgres::IdempotencyReservation::Replay(response) = state
         .repository
-        .find_idempotent_response(&scope, &key, &request_hash)
+        .reserve_idempotency(&scope, &key, &request_hash)
         .await
         .map_err(ApiError)?
     {
@@ -425,7 +425,10 @@ fn validate_analysis_filters(status: Option<&str>, locale: Option<&str>) -> Resu
         )));
     }
     if let Some(locale) = locale
-        && (locale.is_empty() || locale.len() > 32 || !locale.is_ascii())
+        && (locale.is_empty()
+            || locale.len() > 32
+            || !locale.is_ascii()
+            || locale.bytes().any(|byte| !(0x20..=0x7e).contains(&byte)))
     {
         return Err(ApiError(application::ApplicationError::InvalidInput(
             "locale must contain 1 to 32 ASCII characters".to_owned(),

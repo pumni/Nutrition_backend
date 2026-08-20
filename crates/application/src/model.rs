@@ -16,6 +16,7 @@ pub enum AnalysisMode {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct AnalysisRequest {
     pub text: String,
     pub locale: String,
@@ -256,6 +257,7 @@ impl AnalysisOutcome {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ClarificationAnswerRequest {
     pub expected_revision_id: AnalysisRevisionId,
     pub question_id: ClarificationQuestionId,
@@ -266,6 +268,7 @@ pub struct ClarificationAnswerRequest {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct PortionCorrection {
     pub item_index: usize,
     pub quantity: Decimal,
@@ -273,6 +276,7 @@ pub struct PortionCorrection {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct CorrectionRequest {
     pub base_revision_id: AnalysisRevisionId,
     pub item_corrections: Vec<PortionCorrection>,
