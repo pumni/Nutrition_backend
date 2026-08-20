@@ -79,7 +79,7 @@ pub(crate) async fn analyze(
     let scope = format!("user:{principal}:create");
     let key = required_idempotency_key(&headers)?;
     let request_hash = json_hash(&request)?;
-    if let persistence_postgres::IdempotencyReservation::Replay(response) = state
+    if let Some(response) = state
         .repository
         .reserve_idempotency(&scope, &key, &request_hash)
         .await
@@ -138,7 +138,7 @@ pub(crate) async fn answer_clarification(
     let scope = format!("user:{principal}:clarification:{analysis_id}");
     let key = required_idempotency_key(&headers)?;
     let request_hash = json_hash(&request)?;
-    if let persistence_postgres::IdempotencyReservation::Replay(response) = state
+    if let Some(response) = state
         .repository
         .reserve_idempotency(&scope, &key, &request_hash)
         .await
@@ -172,7 +172,7 @@ pub(crate) async fn correct_analysis(
     let scope = format!("user:{principal}:correction:{analysis_id}");
     let key = required_idempotency_key(&headers)?;
     let request_hash = json_hash(&request)?;
-    if let persistence_postgres::IdempotencyReservation::Replay(response) = state
+    if let Some(response) = state
         .repository
         .reserve_idempotency(&scope, &key, &request_hash)
         .await

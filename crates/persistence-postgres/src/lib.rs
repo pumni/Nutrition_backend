@@ -8,7 +8,7 @@ mod portion_repository;
 mod privacy;
 mod seed;
 
-pub use analysis_repository::{IdempotencyReservation, PostgresAnalysisRepository};
+pub use analysis_repository::PostgresAnalysisRepository;
 pub use catalog_activation::{
     CatalogReleaseActivationError, CatalogReleaseActivationReport, CatalogReleaseActivationRequest,
     CatalogReleaseRollbackReport, CatalogReleaseRollbackRequest, activate_catalog_release,

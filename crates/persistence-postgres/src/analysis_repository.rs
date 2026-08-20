@@ -21,11 +21,6 @@ pub struct PostgresAnalysisRepository {
     pool: PgPool,
 }
 
-pub enum IdempotencyReservation {
-    Acquired,
-    Replay(Value),
-}
-
 impl PostgresAnalysisRepository {
     #[must_use]
     pub fn new(pool: PgPool) -> Self {
@@ -46,7 +41,7 @@ impl PostgresAnalysisRepository {
         scope_key: &str,
         key: &str,
         request_hash: &str,
-    ) -> Result<IdempotencyReservation, ApplicationError> {
+    ) -> Result<Option<Value>, ApplicationError> {
         for _ in 0..50 {
             let claimed = sqlx::query(
                 r"
@@ -70,7 +65,7 @@ impl PostgresAnalysisRepository {
             .await
             .map_err(|_| ApplicationError::Persistence)?;
             if claimed.is_some() {
-                return Ok(IdempotencyReservation::Acquired);
+                return Ok(None);
             }
 
             let existing_hash = sqlx::query_scalar::<_, String>(
@@ -95,7 +90,7 @@ impl PostgresAnalysisRepository {
                 .find_idempotent_response(scope_key, key, request_hash)
                 .await?
             {
-                return Ok(IdempotencyReservation::Replay(response));
+                return Ok(Some(response));
             }
 
             sqlx::query("SELECT pg_sleep(0.1)")
