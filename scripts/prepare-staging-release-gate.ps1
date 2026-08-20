@@ -135,7 +135,8 @@ foreach ($image in @($candidate.containers)) {
 
 Assert-ExactProperties -Object $gateInput -Allowed @(
     "schema_version", "environment", "candidate_evidence_sha256", "auth_config_fingerprint",
-    "auth_config_evidence_ref", "behavior_vector", "rollback_target_evidence_ref", "gates"
+    "auth_config_artifact_path", "auth_config_evidence_ref", "behavior_vector",
+    "rollback_target_artifact_path", "rollback_target_evidence_sha256", "rollback_target_evidence_ref", "gates"
 ) -Label "staging gate input"
 if ([string]$gateInput.schema_version -ne "staging-release-gate-input-0.1.0" -or
     [string]$gateInput.environment -notin @("synthetic-local", "staging")) {
@@ -147,8 +148,25 @@ if ([string]$gateInput.candidate_evidence_sha256 -ine "sha256:$actualCandidateSh
     throw "staging gate input is not bound to the candidate evidence document"
 }
 Assert-Sha256 -Value ([string]$gateInput.auth_config_fingerprint) -Label "auth configuration fingerprint"
+$authArtifactPath = Assert-ExternalPath -Path ([string]$gateInput.auth_config_artifact_path) -Label "auth configuration artifact path"
+if (-not (Test-Path -LiteralPath $authArtifactPath -PathType Leaf)) {
+    throw "auth configuration artifact does not exist"
+}
+$actualAuthArtifactSha = (Get-FileHash -LiteralPath $authArtifactPath -Algorithm SHA256).Hash.ToLowerInvariant()
+if ([string]$gateInput.auth_config_fingerprint -ine "sha256:$actualAuthArtifactSha") {
+    throw "auth configuration fingerprint does not match its external artifact"
+}
 Assert-SafeReference -Value ([string]$gateInput.auth_config_evidence_ref) -Label "auth configuration evidence reference"
 Assert-SafeReference -Value ([string]$gateInput.behavior_vector) -Label "behavior vector"
+$rollbackTargetArtifactPath = Assert-ExternalPath -Path ([string]$gateInput.rollback_target_artifact_path) -Label "rollback target artifact path"
+if (-not (Test-Path -LiteralPath $rollbackTargetArtifactPath -PathType Leaf)) {
+    throw "rollback target evidence artifact does not exist"
+}
+Assert-Sha256 -Value ([string]$gateInput.rollback_target_evidence_sha256) -Label "rollback target evidence SHA-256"
+$actualRollbackTargetSha = (Get-FileHash -LiteralPath $rollbackTargetArtifactPath -Algorithm SHA256).Hash.ToLowerInvariant()
+if ([string]$gateInput.rollback_target_evidence_sha256 -ine "sha256:$actualRollbackTargetSha") {
+    throw "rollback target evidence SHA-256 does not match its external artifact"
+}
 Assert-SafeReference -Value ([string]$gateInput.rollback_target_evidence_ref) -Label "rollback target evidence reference"
 
 $requiredGateIds = @(
@@ -260,6 +278,7 @@ $evidence = [ordered]@{
         environment = [string]$gateInput.environment
         configuration_fingerprint = [string]$gateInput.auth_config_fingerprint
         evidence_ref = [string]$gateInput.auth_config_evidence_ref
+        artifact_sha256 = [string]$gateInput.auth_config_fingerprint
     }
     parser = [ordered]@{
         schema_version = [string]$candidate.parser.schema_version
@@ -278,6 +297,7 @@ $evidence = [ordered]@{
     gates = @($gateRecords | Sort-Object id)
     rollback = [ordered]@{
         target_evidence_ref = [string]$gateInput.rollback_target_evidence_ref
+        target_artifact_sha256 = [string]$gateInput.rollback_target_evidence_sha256
         rollback_plan_sha256 = "sha256:$rollbackPlanSha"
         production_authorization = $false
     }

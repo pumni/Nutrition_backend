@@ -12,8 +12,8 @@ an exact candidate. It consumes two external JSON documents:
 
 All input and output paths must be outside the repository. The script binds the candidate file
 SHA-256, current clean Git commit, migration set, parser/schema/provider identity, catalog release,
-behavior vector, auth configuration fingerprint, container digests, and the versioned rollback
-plan SHA-256. It never reads or writes secrets, deploys an image, calls a hosted provider, changes
+behavior vector, externally hashed auth configuration evidence, externally hashed rollback-target
+evidence, container digests, and the versioned rollback plan SHA-256. It never reads or writes secrets, deploys an image, calls a hosted provider, changes
 traffic, activates a catalog, creates a tag, or publishes `v1.0.0`.
 
 ## Required gates
