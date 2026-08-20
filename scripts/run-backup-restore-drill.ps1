@@ -45,7 +45,14 @@ function Invoke-Docker {
         [Parameter(Mandatory = $true)][string]$Label
     )
 
-    $output = @(& docker @Arguments 2>&1)
+    $nativePreference = $PSNativeCommandUseErrorActionPreference
+    $PSNativeCommandUseErrorActionPreference = $false
+    try {
+        $output = @(& docker @Arguments 2>&1)
+    }
+    finally {
+        $PSNativeCommandUseErrorActionPreference = $nativePreference
+    }
     if ($LASTEXITCODE -ne 0) {
         $details = ($output -join [Environment]::NewLine).Trim()
         if ([string]::IsNullOrWhiteSpace($details)) {
@@ -63,7 +70,14 @@ function Invoke-Native {
         [Parameter(Mandatory = $true)][string]$Label
     )
 
-    $output = @(& $Program @Arguments 2>&1)
+    $nativePreference = $PSNativeCommandUseErrorActionPreference
+    $PSNativeCommandUseErrorActionPreference = $false
+    try {
+        $output = @(& $Program @Arguments 2>&1)
+    }
+    finally {
+        $PSNativeCommandUseErrorActionPreference = $nativePreference
+    }
     if ($LASTEXITCODE -ne 0) {
         $details = ($output -join [Environment]::NewLine).Trim()
         if ([string]::IsNullOrWhiteSpace($details)) {
@@ -237,7 +251,9 @@ function Get-PrivacyReplayManifest {
         "replay_status",
         "production_authorization",
         "deleted_user_tombstones",
-        "retention_tombstones"
+        "retention_tombstones",
+        "tombstones_applied",
+        "replay_reference"
     )
     foreach ($name in $required) {
         if ($null -eq $manifest.PSObject.Properties[$name]) {
@@ -250,10 +266,12 @@ function Get-PrivacyReplayManifest {
         throw "privacy replay manifest contains unknown fields"
     }
     if ([string]$manifest.schema_version -ne "privacy-restore-gate-0.1.0" -or
-        [string]$manifest.environment -ne "synthetic-local" -or
+        [string]$manifest.environment -notin @("synthetic-local", "staging") -or
         [string]$manifest.replay_status -ne "applied" -or
-        [bool]$manifest.production_authorization) {
-        throw "privacy replay manifest is not an approved synthetic-local applied gate"
+        [bool]$manifest.production_authorization -or
+        -not [bool]$manifest.tombstones_applied -or
+        [string]$manifest.replay_reference -notmatch '^[A-Za-z0-9:/._-]{1,256}$') {
+        throw "privacy replay manifest is not an approved applied non-production gate"
     }
     foreach ($name in @("deleted_user_tombstones", "retention_tombstones")) {
         if ([int64]$manifest.$name -lt 0) {
@@ -268,9 +286,32 @@ function Get-DatabaseSnapshot {
 
     $query = @"
 WITH schema_objects AS (
-    SELECT schemaname || '.' || tablename AS object_id
-      FROM pg_catalog.pg_tables
-     WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
+    SELECT 'table:' || namespace.nspname || '.' || relation.relname || ':' || relation.relkind::text AS object_id
+      FROM pg_catalog.pg_class relation
+      JOIN pg_catalog.pg_namespace namespace ON namespace.oid = relation.relnamespace
+     WHERE namespace.nspname NOT IN ('pg_catalog', 'information_schema')
+       AND namespace.nspname NOT LIKE 'pg_%'
+       AND relation.relkind IN ('r', 'p', 'v', 'm', 'S')
+    UNION ALL
+    SELECT 'column:' || table_schema || '.' || table_name || ':' || ordinal_position::text || ':' ||
+           column_name || ':' || data_type || ':' || is_nullable || ':' || COALESCE(column_default, '') AS object_id
+      FROM information_schema.columns
+     WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
+       AND table_schema NOT LIKE 'pg_%'
+    UNION ALL
+    SELECT 'index:' || index_namespace.nspname || '.' || index_relation.relname || ':' ||
+           table_namespace.nspname || '.' || table_relation.relname || ':' || access_method.amname || ':' ||
+           index_item.indisunique::text || ':' || index_item.indisprimary::text || ':' ||
+           COALESCE(pg_get_indexdef(index_item.indexrelid), '') AS object_id
+      FROM pg_catalog.pg_index index_item
+      JOIN pg_catalog.pg_class index_relation ON index_relation.oid = index_item.indexrelid
+      JOIN pg_catalog.pg_class table_relation ON table_relation.oid = index_item.indrelid
+      JOIN pg_catalog.pg_namespace index_namespace ON index_namespace.oid = index_relation.relnamespace
+      JOIN pg_catalog.pg_namespace table_namespace ON table_namespace.oid = table_relation.relnamespace
+      JOIN pg_catalog.pg_am access_method ON access_method.oid = index_relation.relam
+     WHERE index_namespace.nspname NOT IN ('pg_catalog', 'information_schema')
+       AND index_namespace.nspname NOT LIKE 'pg_%'
+       AND table_namespace.nspname NOT LIKE 'pg_%'
 ), constraint_objects AS (
     SELECT namespace.nspname || '.' || relation.relname || ':' || constraint_item.conname || ':' ||
            pg_get_constraintdef(constraint_item.oid) AS object_id
@@ -278,6 +319,28 @@ WITH schema_objects AS (
       JOIN pg_catalog.pg_class relation ON relation.oid = constraint_item.conrelid
       JOIN pg_catalog.pg_namespace namespace ON namespace.oid = relation.relnamespace
      WHERE namespace.nspname NOT IN ('pg_catalog', 'information_schema')
+       AND namespace.nspname NOT LIKE 'pg_%'
+    UNION ALL
+    SELECT 'trigger:' || namespace.nspname || '.' || relation.relname || ':' || trigger_item.tgname || ':' ||
+           pg_get_triggerdef(trigger_item.oid) AS object_id
+      FROM pg_catalog.pg_trigger trigger_item
+      JOIN pg_catalog.pg_class relation ON relation.oid = trigger_item.tgrelid
+      JOIN pg_catalog.pg_namespace namespace ON namespace.oid = relation.relnamespace
+     WHERE namespace.nspname NOT IN ('pg_catalog', 'information_schema')
+       AND namespace.nspname NOT LIKE 'pg_%'
+       AND NOT trigger_item.tgisinternal
+), table_row_counts AS (
+    SELECT table_schema || '.' || table_name AS table_name,
+           ((xpath('//count/text()', query_to_xml(
+               format('SELECT count(*) AS count FROM %I.%I', table_schema, table_name),
+               true,
+               false,
+               ''
+           )))[1]::text)::bigint AS row_count
+      FROM information_schema.tables
+     WHERE table_type = 'BASE TABLE'
+       AND table_schema NOT IN ('pg_catalog', 'information_schema')
+       AND table_schema NOT LIKE 'pg_%'
 ), data_fingerprint AS (
     SELECT md5(concat(
         COALESCE((SELECT string_agg(
@@ -295,7 +358,31 @@ WITH schema_objects AS (
         COALESCE((SELECT string_agg(
             id::text || ':' || event_type || ':' || COALESCE(published_at::text, ''),
             '|' ORDER BY id
-        ) FROM ops.outbox_event), '')
+        ) FROM ops.outbox_event), ''), '|',
+        COALESCE((SELECT string_agg(
+            id::text || ':' || meal_analysis_id::text || ':' || revision_number::text || ':' || result_status || ':' || quality_label || ':' || catalog_release_id::text,
+            '|' ORDER BY id
+        ) FROM analysis.analysis_revision), '|'), '|',
+        COALESCE((SELECT string_agg(
+            id::text || ':' || revision_id::text || ':' || item_index::text || ':' || resolution_status || ':' || COALESCE(resolved_food_id::text, '') || ':' || evidence_quality,
+            '|' ORDER BY id
+        ) FROM analysis.analysis_item), '|'), '|',
+        COALESCE((SELECT string_agg(
+            id::text || ':' || analysis_revision_id::text || ':' || status,
+            '|' ORDER BY id
+        ) FROM analysis.clarification_question), '|'), '|',
+        COALESCE((SELECT string_agg(
+            id::text || ':' || question_id::text || ':' || expected_revision_id::text || ':' || COALESCE(created_revision_id::text, ''),
+            '|' ORDER BY id
+        ) FROM analysis.clarification_answer), '|'), '|',
+        COALESCE((SELECT string_agg(
+            id::text || ':' || meal_analysis_id::text || ':' || base_revision_id::text || ':' || COALESCE(created_revision_id::text, ''),
+            '|' ORDER BY id
+        ) FROM app.analysis_correction), '|'), '|',
+        COALESCE((SELECT string_agg(
+            id::text || ':' || action || ':' || target_type || ':' || target_id::text,
+            '|' ORDER BY id
+        ) FROM ops.audit_event), '')
     )) AS value
 )
 SELECT json_build_object(
@@ -310,7 +397,12 @@ SELECT json_build_object(
         FROM _sqlx_migrations
     ), '[]'::json),
     'schema_fingerprint', (SELECT md5(COALESCE(string_agg(object_id, E'\n' ORDER BY object_id), '')) FROM schema_objects),
+    'table_schema_fingerprint', (SELECT md5(COALESCE(string_agg(object_id, E'\n' ORDER BY object_id), '')) FROM schema_objects WHERE object_id LIKE 'table:%'),
+    'column_schema_fingerprint', (SELECT md5(COALESCE(string_agg(object_id, E'\n' ORDER BY object_id), '')) FROM schema_objects WHERE object_id LIKE 'column:%'),
+    'index_schema_fingerprint', (SELECT md5(COALESCE(string_agg(object_id, E'\n' ORDER BY object_id), '')) FROM schema_objects WHERE object_id LIKE 'index:%'),
+    'index_objects', COALESCE((SELECT json_agg(object_id ORDER BY object_id) FROM schema_objects WHERE object_id LIKE 'index:%'), '[]'::json),
     'constraint_fingerprint', (SELECT md5(COALESCE(string_agg(object_id, E'\n' ORDER BY object_id), '')) FROM constraint_objects),
+    'table_row_counts', COALESCE((SELECT json_agg(json_build_object('table', table_name, 'count', row_count) ORDER BY table_name) FROM table_row_counts), '[]'::json),
     'data_fingerprint', (SELECT value FROM data_fingerprint),
     'analysis_count', (SELECT count(*) FROM analysis.meal_analysis),
     'catalog_release_count', (SELECT count(*) FROM catalog.catalog_release),
@@ -347,8 +439,15 @@ function Assert-SnapshotMatches {
         }
     }
     if ([string]$Expected.schema_fingerprint -ne [string]$Actual.schema_fingerprint -or
+        [string]$Expected.table_schema_fingerprint -ne [string]$Actual.table_schema_fingerprint -or
+        [string]$Expected.column_schema_fingerprint -ne [string]$Actual.column_schema_fingerprint -or
+        [string]$Expected.index_schema_fingerprint -ne [string]$Actual.index_schema_fingerprint -or
+        (ConvertTo-Json $Expected.index_objects -Depth 10 -Compress) -ne
+        (ConvertTo-Json $Actual.index_objects -Depth 10 -Compress) -or
         [string]$Expected.constraint_fingerprint -ne [string]$Actual.constraint_fingerprint -or
         [string]$Expected.data_fingerprint -ne [string]$Actual.data_fingerprint -or
+        (ConvertTo-Json $Expected.table_row_counts -Depth 10 -Compress) -ne
+        (ConvertTo-Json $Actual.table_row_counts -Depth 10 -Compress) -or
         (ConvertTo-Json $Expected.migration_inventory -Depth 10 -Compress) -ne
         (ConvertTo-Json $Actual.migration_inventory -Depth 10 -Compress)) {
         throw "restore invariant fingerprint mismatch"
@@ -533,7 +632,7 @@ try {
     if ([int64]$privacyReplayManifest.deleted_user_tombstones -ne [int64]$sourceSnapshot.privacy_deletion_event_count) {
         throw "privacy replay manifest does not cover the source deletion event count"
     }
-    if ([int64]$privacyReplayManifest.retention_tombstones -ne 0) {
+    if ([string]$privacyReplayManifest.environment -eq "synthetic-local" -and [int64]$privacyReplayManifest.retention_tombstones -ne 0) {
         throw "synthetic local foundation has no supported retention tombstone replay implementation"
     }
 
@@ -626,8 +725,20 @@ try {
         if ([int]$createResponse.StatusCode -ne 200) {
             throw "restored API synthetic create did not return HTTP 200"
         }
+        $created = $createResponse.Content | ConvertFrom-Json
+        $createdAnalysisId = [string]$created.analysis_id
+        $parsedAnalysisId = [Guid]::Empty
+        if (-not [Guid]::TryParse($createdAnalysisId, [ref]$parsedAnalysisId)) {
+            throw "restored API synthetic create did not return an analysis identifier"
+        }
         $applicationChecks["restored_api_create"] = "passed"
         $ownerDatabaseCount = [int64](Invoke-DbScalar -Container $targetName -Query "SELECT count(*) FROM analysis.meal_analysis WHERE user_id = '$ownerId'::uuid;" -Label "check restored owner analysis count")
+        $createdAtEpoch = [double](Invoke-DbScalar -Container $targetName -Query "SELECT extract(epoch FROM created_at) FROM analysis.meal_analysis WHERE id = '$createdAnalysisId'::uuid;" -Label "read restored analysis creation time")
+        $visibleAfterEpoch = [Math]::Floor($createdAtEpoch) + 1
+        while (([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() / 1000.0) -lt $visibleAfterEpoch) {
+            Start-Sleep -Milliseconds 50
+        }
+        $applicationChecks["owner_list_snapshot_visibility"] = "passed"
         $listResponse = Invoke-WebRequest -Uri "$baseUrl/v1/nutrition/analyses?page_size=50" -Headers @{ Authorization = "Bearer dev:$ownerId" } -TimeoutSec 5
         if ([int]$listResponse.StatusCode -ne 200) {
             throw "owner-scoped analysis listing did not return HTTP 200"
@@ -653,6 +764,9 @@ try {
                 throw "owner-scoped analysis listing exposed an unexpected field"
             }
         }
+        if ([string]$listItems[0].analysis_id -ne $createdAnalysisId) {
+            throw "owner-scoped analysis listing did not return the created analysis"
+        }
         $applicationChecks["owner_scoped_analysis_read"] = "passed"
         $foreignId = if ($ownerId -eq "0198f100-0000-7000-8000-000000000097") {
             "0198f100-0000-7000-8000-000000000096"
@@ -660,12 +774,26 @@ try {
         else {
             "0198f100-0000-7000-8000-000000000097"
         }
-        $foreignResponse = Invoke-WebRequest -Uri "$baseUrl/v1/nutrition/analyses?page_size=50" -Headers @{ Authorization = "Bearer dev:$foreignId" } -TimeoutSec 5
+        $ownerDetailResponse = Invoke-WebRequest -Uri "$baseUrl/v1/nutrition/analyses/$createdAnalysisId" -Headers @{ Authorization = "Bearer dev:$ownerId" } -TimeoutSec 5
+        if ([int]$ownerDetailResponse.StatusCode -ne 200) {
+            throw "owner could not read the restored analysis detail"
+        }
+        $ownerDetail = $ownerDetailResponse.Content | ConvertFrom-Json
+        if ([string]$ownerDetail.analysis_id -ne $createdAnalysisId) {
+            throw "owner analysis detail did not match the created analysis"
+        }
+        $applicationChecks["owner_analysis_detail_read"] = "passed"
+        $foreignResponse = Invoke-WebRequest -SkipHttpErrorCheck -Uri "$baseUrl/v1/nutrition/analyses?page_size=50" -Headers @{ Authorization = "Bearer dev:$foreignId" } -TimeoutSec 5
         $foreignList = $foreignResponse.Content | ConvertFrom-Json
         if ([int]$foreignResponse.StatusCode -ne 200 -or @($foreignList.items).Count -ne 0) {
             throw "foreign owner analysis listing was not empty"
         }
         $applicationChecks["foreign_owner_isolation"] = "passed"
+        $foreignDetailResponse = Invoke-WebRequest -SkipHttpErrorCheck -Uri "$baseUrl/v1/nutrition/analyses/$createdAnalysisId" -Headers @{ Authorization = "Bearer dev:$foreignId" } -TimeoutSec 5
+        if ([int]$foreignDetailResponse.StatusCode -ne 403) {
+            throw "foreign owner analysis detail did not return HTTP 403"
+        }
+        $applicationChecks["foreign_analysis_detail_forbidden"] = "passed"
     }
     finally {
         if ($apiProcess -and -not $apiProcess.HasExited) {
@@ -758,6 +886,9 @@ $evidence = [ordered]@{
         retention_days = 35
         encryption = "OWNER-BE-005 requires platform encryption; local artifact used ephemeral AES-256-CBC and emitted no key"
         restore_tombstones_before_serve = if ($success) { "verified-by-external-manifest-before-api" } else { $false }
+        privacy_replay_environment = if ($privacyReplayManifest) { [string]$privacyReplayManifest.environment } else { $null }
+        privacy_replay_reference = if ($privacyReplayManifest) { [string]$privacyReplayManifest.replay_reference } else { $null }
+        tombstones_applied = if ($privacyReplayManifest) { [bool]$privacyReplayManifest.tombstones_applied } else { $false }
         privacy_replay_manifest_sha256 = if ($privacyReplayManifest) { (Get-FileHash -LiteralPath $PrivacyReplayManifestFullPath -Algorithm SHA256).Hash.ToLowerInvariant() } else { $null }
         staging_restore_frequency = "monthly"
         production_backup_restore_frequency = "at least quarterly from production backup copies"

@@ -30,14 +30,15 @@ Get-Content -Raw $evidence
 
 The privacy manifest is an external, non-sensitive platform artifact. For this synthetic fixture,
 it must use `schema_version=privacy-restore-gate-0.1.0`, `environment=synthetic-local`,
-`replay_status=applied`, `production_authorization=false`, and zero deletion/retention tombstones.
-The script verifies the manifest before it starts the API. A staging run must provide the platform's
-real replay result and matching counts; the script does not invent a tombstone table or silently
-serve restored data when the replay gate is absent.
+`replay_status=applied`, `tombstones_applied=true`, `production_authorization=false`, a safe
+`replay_reference`, and zero deletion/retention tombstones. The script verifies the manifest before
+it starts the API. A staging run may use `environment=staging` and must provide the platform's real
+replay result and matching counts; the script does not invent a tombstone table or silently serve
+restored data when the replay gate is absent.
 
 The script performs the following bounded checks:
 
-- starts the local PostgreSQL service when it is not supplied with `-UseExistingSource`;
+- starts a fresh disposable local PostgreSQL Compose project with the pinned `postgres:18` image;
 - creates a PostgreSQL custom-format dump without placing it in the repository;
 - encrypts the external local drill artifact with an ephemeral AES-256 key, emits no key, and
   removes plaintext scratch copies after transfer;
@@ -47,9 +48,10 @@ The script performs the following bounded checks:
 - verifies no restored analysis row contains `raw_text_ciphertext`;
 - verifies the privacy replay manifest before serving restored data;
 - starts the API against the restored database and checks HTTP 200 readiness, exact owner-scoped
-  listing fields/count, and an empty foreign-owner listing;
+  listing fields/count after the API's timestamp snapshot boundary, owner detail access, and
+  foreign-owner list/detail isolation;
 - records backup/restore duration, artifact SHA-256, and objective comparisons;
-- removes the disposable restore container and stops only the source service it started.
+- removes the disposable restore container and deletes only the source project/volume it created.
 
 The observed local RPO is reported as zero rows omitted from the logical backup snapshot. This is
 useful evidence for the tested dump/restore boundary, but it is not a claim that the platform's
@@ -92,6 +94,14 @@ $rollbackEvidence = Join-Path $env:TEMP "nutrition-p2-105-rollback-evidence.json
 pwsh -NoLogo -NoProfile -File .\scripts\validate-recovery-rollback.ps1 `
   -InputPath $rollbackInput -OutputPath $rollbackEvidence
 ```
+
+The input must bind the current `deploy/recovery/rollback-plan.json` SHA-256, the deterministic
+migration inventory SHA-256, and an external catalog rollback manifest. That manifest must be a
+checksummed `catalog-rollback-manifest-0.1.0` record with `source_status=superseded`,
+`validation_status=verified`, a positive membership count, and `activation_performed=false`.
+Application image/configuration references remain external evidence and must be immutable SHA-256
+values; the validator checks their shape and that the rollback target differs from the current
+values, but it does not claim a deployment occurred.
 
 This validates immutable application image/configuration references, forward-only migration
 compatibility, and a staged immutable catalog rollback reference. It does not deploy an image,
