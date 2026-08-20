@@ -131,6 +131,26 @@ Production still requires:
 The owner remains the sole authority for production catalog activation, production traffic, release tag,
 and canonical publication.
 
+## OWNER-BE-007 — Single-owner P1-101 staging/merge waiver
+
+**Status:** Owner-approved on 2026-08-20 for the P1-101 staging/merge gate only.
+
+Because this is a single-owner project, the owner approves a narrowly scoped waiver of the normal
+two-independent-human benchmark evidence requirement for the P1-101 implementation/staging merge
+gate. The waiver is not a benchmark pass and does not make an AI subagent an annotator or adjudicator.
+
+- The waiver applies only to task `INTENT-P1-101` and gate `benchmark-external`.
+- A trusted evidence wrapper may use `result: "waived"` with a matching owner-waiver artifact.
+- The artifact must identify this decision, the exact target commit, the waiver scope, and
+  `production_authorization: false`.
+- Any machine-generated review or prediction is machine evidence only and must not be labeled human
+  annotation, human adjudication, or production benchmark evidence.
+- P1-101 may proceed through implementation/staging merge review under this waiver, but production
+  hosted parsing remains blocked until the provider privacy/retention gate and the production
+  Vietnamese benchmark requirements in `OWNER-BE-006` are satisfied.
+- This waiver does not apply to P1-102, P1-103, P2-104, P2-105, P0-106, production activation,
+  catalog release, real-user traffic, or canonical publication.
+
 ## Source integrity
 
 This repository record was imported from the owner decision package
