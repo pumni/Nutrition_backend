@@ -1,5 +1,8 @@
 # Nutrition backend
 
+This repository has moved to [pumni/Nutrition](https://github.com/pumni/Nutrition).
+Component path: `backend/`.
+
 Evidence-first Rust backend for Vietnamese meal analysis. Language parsing may use a bounded
 adapter, but food identity, portion mass, composition, calories, and persisted evidence come from
 deterministic, versioned system evidence.
